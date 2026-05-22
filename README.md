@@ -1,0 +1,1 @@
+# FINVIZ-Analyzer
