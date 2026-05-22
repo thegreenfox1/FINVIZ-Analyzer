@@ -184,4 +184,96 @@ dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remov
 
 function tryParse(raw){let s=raw.replace(/```json|```/g,'').trim();
   try{return JSON.parse(s);}catch(_){}
-  const st=s.indexOf('{'),en=s.lastInde
+  const st=s.indexOf('{'),en=s.lastIndexOf('}');
+  if(st!==-1&&en>st)try{return JSON.parse(s.slice(st,en+1));}catch(_){}
+  let c=s.slice(st<0?0:st);
+  for(let i=0;i<6;i++){const l=c.lastIndexOf('}');if(l<0)break;c=c.slice(0,l);
+    try{return JSON.parse(c+']}');}catch(_){}}return null;}
+
+const SYS=`Sei un analista swing trading. Rispondi SOLO con JSON valido, niente testo, niente markdown.
+PREZZI: leggi SOLO dalla colonna "Price" dello screenshot.
+ESCLUSIONE→Tier 3: Perf Week>15%, Volatility W>10%, perf annuale negativa+downtrend, small cap irregolare.
+Schema (analisi MAX 2 frasi per titolo):
+{"timestamp":"ISO","total":N,"winner":{"ticker":"X","reason":"1 frase"},"action":"azione con prezzo","stocks":[{"ticker":"","name":"","sector":"","price":0.0,"perf_week":0.0,"vol_week":0.0,"rel_vol":0.0,"tier":1,"is_best":false,"entry":"","stop":"","target1":"","target2":"","rr":"","winrate":"","analysis":"max 2 frasi","exclude_reason":"","tags":[""]}]}
+Includi TUTTI i titoli. Inizia con { finisci con }.`;
+
+analyzeBtn.addEventListener('click',async()=>{
+  if(!imageBase64)return;
+  const apiKey=getApiKey();
+  if(!apiKey){showError('Inserisci la API key Anthropic in alto e premi Salva.');return;}
+  analyzeBtn.disabled=true;spinner.style.display='block';btnText.textContent='Analisi in corso…';
+  thinking.style.display='block';resultsDiv.style.display='none';errorBox.style.display='none';
+  progressBar.style.display='block';setProgress(10);
+  try{
+    setProgress(30);
+    const resp=await fetch('/.netlify/functions/proxy',{method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:6000,system:SYS,
+        messages:[{role:'user',content:[
+          {type:'image',source:{type:'base64',media_type:imageType,data:imageBase64}},
+          {type:'text',text:'Analizza TUTTI i titoli. JSON only, analisi max 2 frasi.'}
+        ]}]})});
+    setProgress(72);
+    const data=await resp.json();
+    if(resp.status===429||data?.type==='exceeded_limit'||data?.error?.type==='exceeded_limit'){
+      startCountdown(data?.resetsAt||data?.error?.resetsAt||(Math.floor(Date.now()/1000)+18000));return;}
+    if(!resp.ok)throw new Error(data?.error?.message||'HTTP '+resp.status);
+    const raw=data.content?.find(b=>b.type==='text')?.text||'';
+    const json=tryParse(raw);
+    if(!json)throw new Error('JSON non valido — riprova');
+    setProgress(100);setTimeout(()=>{progressBar.style.display='none';setProgress(0);},500);
+    render(json);
+  }catch(e){showError(e.message);console.error(e);}
+  finally{thinking.style.display='none';spinner.style.display='none';progressBar.style.display='none';
+    if(!cdInterval){analyzeBtn.disabled=false;btnText.textContent='⚡ Analizza di nuovo';}}
+});
+
+function renderSection(stocks,tier,label,cls,wt){
+  if(!stocks.length)return '';
+  let h=`<div class="tier-section"><div class="tier-header"><div class="tier-label ${cls}-label">${label}</div><div class="tier-count">${stocks.length} titoli</div></div>`;
+  stocks.forEach(st=>{const best=st.ticker===wt;
+    h+=`<div class="stock-card ${cls}${best?' best':''}"><div class="card-top">
+      <div class="ticker-chip">${st.ticker}</div>
+      <div class="stock-name">${st.name||''}${st.sector?`<span class="stock-sector">${st.sector}</span>`:''}</div>
+      <div class="price-tag">${fmtPrice(st.price)}</div>
+      ${best?'<div class="best-badge">BEST</div>':''}
+    </div>`;
+    if(tier<3)h+=`<div class="metrics-row metrics-5">
+      <div class="metric-box"><div class="lbl">Perf 1W</div><div class="val ${perfColor(st.perf_week)}">${fmtPerf(st.perf_week)}</div></div>
+      <div class="metric-box"><div class="lbl">Ingresso</div><div class="val g sm">${st.entry||'–'}</div></div>
+      <div class="metric-box"><div class="lbl">Stop</div><div class="val r sm">${st.stop?'$'+st.stop:'–'}</div></div>
+      <div class="metric-box"><div class="lbl">TP1/TP2</div><div class="val b sm">${st.target1?'$'+st.target1:'–'}/${st.target2?'$'+st.target2:'–'}</div></div>
+      <div class="metric-box"><div class="lbl">R:R · Win%</div><div class="val a sm">${st.rr||'–'} · ${st.winrate||'–'}</div></div>
+    </div>`;
+    else h+=`<div class="metrics-row metrics-3">
+      <div class="metric-box"><div class="lbl">Perf 1W</div><div class="val ${perfColor(st.perf_week)}">${fmtPerf(st.perf_week)}</div></div>
+      <div class="metric-box"><div class="lbl">Vol. sett.</div><div class="val a">${st.vol_week!=null?parseFloat(st.vol_week).toFixed(2)+'%':'–'}</div></div>
+      <div class="metric-box"><div class="lbl">Esclusione</div><div class="val r sm">${st.exclude_reason||'–'}</div></div>
+    </div>`;
+    h+=`<div class="analysis-text">${st.analysis||''}</div>`;
+    if(st.tags?.length)h+=`<div class="tags">${st.tags.map(t=>`<span class="tag">${t}</span>`).join('')}</div>`;
+    h+='</div>';});
+  return h+'</div>';}
+
+function render(data){
+  const stocks=data.stocks||[],wt=data.winner?.ticker||'';
+  const t1=stocks.filter(s=>s.tier===1),t2=stocks.filter(s=>s.tier===2),t3=stocks.filter(s=>s.tier===3);
+  const w=stocks.find(s=>s.ticker===wt)||{};
+  let h='';
+  if(wt)h+=`<div class="winner-box">
+    <div class="action-label">★ Best setup oggi</div>
+    <div class="winner-row"><div class="winner-ticker">${wt}</div><div class="winner-info">
+      <div class="title">${w.name||wt}${w.sector?' — '+w.sector:''}</div>
+      <div class="sub">Win rate ${w.winrate||'–'} · R:R ${w.rr||'–'} · ${fmtPrice(w.price)}</div>
+    </div></div>
+    <div class="winner-reason">${data.winner?.reason||''}</div>
+    ${data.action?`<div class="action-line"><strong>⚡ Azione:</strong> ${escHL(data.action)}</div>`:''}
+  </div>`;
+  h+=renderSection(t1,1,'▲ Tier 1 — Entra','tier1',wt);
+  h+=renderSection(t2,2,'◆ Tier 2 — Watchlist','tier2',wt);
+  h+=renderSection(t3,3,'✕ Tier 3 — Evita','tier3',wt);
+  resultsDiv.innerHTML=h;resultsDiv.style.display='block';
+  resultsDiv.scrollIntoView({behavior:'smooth',block:'start'});}
+</script>
+</body>
+</html>
