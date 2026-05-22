@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="it">
+<!-- v2: fixed JSON truncation (max_tokens 6000), rate limit countdown, robust JSON recovery -->
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finviz Swing Analyzer — AI Trading</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  --bg:#0a0c0f;
+  --surface:#111318;
+  --surface2:#191d24;
+  --border:#ffffff12;
+  --border2:#ffffff20;
+  --accent:#00e5a0;
+  --accent2:#00b57d;
+  --amber:#f5a623;
+  --red:#ff4d6d;
+  --blue:#4d9fff;
+  --text:#e8eaf0;
+  --muted:#6b7280;
+  --mono:'DM Mono',monospace;
+  --sans:'Syne',sans-serif;
+}
+
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;overflow-x:hidden}
+
+/* noise overlay */
+body::before{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
+  opacity:.03;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* grid pattern background */
+body::after{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);
+  background-size:48px 48px;
+  mask-image:radial-gradient(ellipse 80% 60% at 50% 0%,black 0%,transparent 100%);
+}
+
+.page{position:relative;z-index:1}
+
+/* ── HEADER ── */
+header{
+  padding:1.75rem 3rem;
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:2rem;
+  backdrop-filter:blur(8px);
+  position:sticky;top:0;z-index:100;
+  background:rgba(10,12,15,.85);
+}
+.logo-wrap{flex:1}
+.logo{font-family:var(--sans);font-size:1.5rem;font-weight:800;letter-spacing:-.03em;color:var(--text)}
+.logo span{color:var(--accent)}
+.logo-sub{font-family:var(--mono);font-size:.65rem;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-top:3px}
+.header-pills{display:flex;gap:.5rem}
+.pill{font-family:var(--mono);font-size:.65rem;padding:.25rem .65rem;border:1px solid var(--border2);border-radius:20px;color:var(--muted);letter-spacing:.06em}
+.pill.live{border-color:var(--accent);color:var(--accent)}
+.pill.live::before{content:'● ';font-size:.5rem;vertical-align:middle}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px var(--accent);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* ── MAIN ── */
+.main{max-width:1100px;margin:0 auto;padding:2.5rem 3rem}
+
+/* hero */
+.hero{margin-bottom:2.5rem}
+.hero-title{font-size:2.2rem;font-weight:800;letter-spacing:-.04em;line-height:1.15;margin-bottom:.6rem}
+.hero-title span{color:var(--accent)}
+.hero-sub{font-family:var(--mono);font-size:.8rem;color:var(--muted);line-height:1.7;max-width:580px}
+
+/* ── UPLOAD ZONE ── */
+.upload-zone{
+  border:1.5px dashed var(--border2);
+  border-radius:18px;
+  padding:2.5rem 2rem;
+  text-align:center;
+  cursor:pointer;
+  transition:all .25s;
+  position:relative;
+  background:var(--surface);
+  margin-bottom:1.5rem;
+  overflow:hidden;
+}
+.upload-zone::before{
+  content:'';position:absolute;inset:0;
+  background:radial-gradient(ellipse 60% 50% at 50% 0%,rgba(0,229,160,.06) 0%,transparent 70%);
+  pointer-events:none;
+}
+.upload-zone:hover,.upload-zone.drag{
+  border-color:var(--accent);
+  background:rgba(0,229,160,.04);
+}
+.upload-zone input[type=file]{
+  position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;
+}
+.upload-icon{font-size:2.8rem;margin-bottom:1rem;filter:grayscale(.4)}
+.upload-title{font-size:1.1rem;font-weight:700;margin-bottom:.4rem}
+.upload-sub{font-family:var(--mono);font-size:.72rem;color:var(--muted);letter-spacing:.05em}
+.upload-preview{
+  max-width:100%;max-height:320px;object-fit:contain;
+  border-radius:10px;margin-top:1.5rem;
+  border:1px solid var(--border2);
+  display:none;position:relative;z-index:1;
+}
+
+/* ── PARAMS ── */
+.params-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem;margin-bottom:1.5rem}
+.param-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:12px;padding:.9rem 1.1rem;
+}
+.param-label{font-family:var(--mono);font-size:.62rem;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:.4rem}
+.param-val{font-size:.85rem;font-weight:600;color:var(--accent)}
+
+/* ── ANALYZE BUTTON ── */
+.analyze-btn{
+  width:100%;padding:1.05rem;
+  background:var(--accent);color:#000;
+  font-family:var(--sans);font-size:1rem;font-weight:700;
+  border:none;border-radius:12px;cursor:pointer;
+  letter-spacing:.02em;transition:all .2s;
+  margin-bottom:1.5rem;
+  display:flex;align-items:center;justify-content:center;gap:.6rem;
+  position:relative;overflow:hidden;
+}
+.analyze-btn::after{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.15),transparent);
+  transform:translateX(-100%);transition:transform .6s;
+}
+.analyze-btn:hover::after{transform:translateX(100%)}
+.analyze-btn:hover{background:var(--accent2);transform:translateY(-1px);box-shadow:0 8px 24px rgba(0,229,160,.25)}
+.analyze-btn:active{transform:translateY(0)}
+.analyze-btn:disabled{opacity:.35;cursor:not-allowed;transform:none;box-shadow:none}
+
+.spinner{
+  width:18px;height:18px;
+  border:2.5px solid rgba(0,0,0,.25);
+  border-top-color:#000;
+  border-radius:50%;
+  animation:spin .65s linear infinite;
+  display:none;flex-shrink:0;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── PROGRESS ── */
+.progress-bar{width:100%;height:3px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-bottom:1.5rem;display:none}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--accent2),var(--accent));width:0%;transition:width .5s ease;border-radius:3px}
+
+/* ── THINKING ── */
+.thinking{
+  display:none;text-align:center;padding:3rem;
+  font-family:var(--mono);font-size:.8rem;color:var(--muted);
+}
+.thinking-title{font-size:1rem;color:var(--text);margin-bottom:.5rem;font-weight:600}
+.dots::after{content:'...';animation:dots 1.5s infinite steps(3)}
+@keyframes dots{0%{content:'.'}33%{content:'..'}66%{content:'...'}}
+
+/* ── ERROR ── */
+.error-box{
+  background:rgba(255,77,109,.08);border:1px solid rgba(255,77,109,.25);
+  border-radius:12px;padding:.9rem 1.1rem;
+  font-size:.85rem;color:var(--red);
+  display:none;margin-bottom:1rem;
+  font-family:var(--mono);
+}
+
+/* ── WINNER BOX ── */
+.winner-box{
+  background:linear-gradient(135deg,rgba(0,229,160,.07) 0%,rgba(0,181,125,.03) 100%);
+  border:1.5px solid var(--accent);
+  border-radius:18px;padding:1.6rem 2rem;margin-bottom:2rem;
+  position:relative;overflow:hidden;
+}
+.winner-box::before{
+  content:'★';position:absolute;right:1.5rem;top:50%;transform:translateY(-50%);
+  font-size:6rem;color:rgba(0,229,160,.06);line-height:1;pointer-events:none;
+}
+.winner-row{display:flex;align-items:flex-start;gap:1rem;margin-bottom:.8rem}
+.winner-ticker{
+  font-family:var(--mono);font-size:1.4rem;font-weight:500;
+  padding:.4rem .9rem;background:var(--accent);color:#000;
+  border-radius:10px;line-height:1.2;flex-shrink:0;
+}
+.winner-info .title{font-size:1.2rem;font-weight:800;color:var(--accent);margin-bottom:3px}
+.winner-info .sub{font-family:var(--mono);font-size:.7rem;color:var(--muted);letter-spacing:.06em}
+.winner-reason{font-size:.85rem;line-height:1.7;color:#b0b8c8;margin-bottom:.9rem}
+.action-line{
+  font-size:.9rem;line-height:1.7;color:var(--text);
+  border-top:1px solid rgba(0,229,160,.2);
+  padding-top:.9rem;
+}
+.action-line .hl{color:var(--accent);font-family:var(--mono);font-weight:500}
+.action-label{font-family:var(--mono);font-size:.65rem;color:var(--accent);letter-spacing:.1em;text-transform:uppercase;margin-bottom:.3rem}
+
+/* ── TIER SECTION ── */
+.tier-section{margin-bottom:2rem}
+.tier-header{display:flex;align-items:center;gap:.75rem;margin-bottom:1rem}
+.tier-label{
+  font-family:var(--mono);font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;
+  padding:.3rem .8rem;border-radius:6px;font-weight:500;
+}
+.tier1-label{background:rgba(0,229,160,.12);color:var(--accent)}
+.tier2-label{background:rgba(245,166,35,.12);color:var(--amber)}
+.tier3-label{background:rgba(255,77,109,.1);color:var(--red)}
+.tier-count{font-family:var(--mono);font-size:.72rem;color:var(--muted)}
+
+/* ── STOCK CARD ── */
+.stock-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:14px;padding:1.3rem 1.6rem;margin-bottom:.75rem;
+  transition:border-color .2s,background .2s;
+  border-left-width:3px;
+}
+.stock-card:hover{border-color:var(--border2)}
+.stock-card.tier1{border-left-color:var(--accent)}
+.stock-card.tier2{border-left-color:var(--amber)}
+.stock-card.tier3{border-left-color:var(--red);opacity:.85}
+.stock-card.best{
+  border-color:var(--accent);
+  background:rgba(0,229,160,.04);
+}
+
+.card-top{display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap}
+.ticker-chip{
+  font-family:var(--mono);font-weight:500;font-size:.92rem;
+  padding:.3rem .8rem;
+  background:var(--surface2);border:1px solid var(--border2);
+  border-radius:8px;min-width:64px;text-align:center;flex-shrink:0;
+}
+.stock-name{font-size:1rem;font-weight:700;flex:1;min-width:120px}
+.stock-sector{font-size:.78rem;color:var(--muted);font-weight:400;margin-left:.4rem}
+.price-tag{font-family:var(--mono);font-size:.95rem;color:var(--accent);flex-shrink:0}
+.best-badge{
+  font-family:var(--mono);font-size:.62rem;
+  padding:.2rem .65rem;background:var(--accent);color:#000;
+  border-radius:5px;font-weight:500;letter-spacing:.06em;flex-shrink:0;
+}
+
+.metrics-row{display:grid;gap:.6rem;margin-bottom:.9rem}
+.metrics-5{grid-template-columns:repeat(5,1fr)}
+.metrics-3{grid-template-columns:repeat(3,1fr)}
+
+.metric-box{background:var(--surface2);border-radius:8px;padding:.55rem .75rem}
+.metric-box .lbl{font-family:var(--mono);font-size:.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+.metric-box .val{font-family:var(--mono);font-size:.83rem;font-weight:500;line-height:1.3}
+.val.g{color:var(--accent)}
+.val.r{color:var(--red)}
+.val.a{color:var(--amber)}
+.val.b{color:var(--blue)}
+.val.sm{font-size:.72rem}
+
+.analysis-text{font-size:.82rem;line-height:1.7;color:#9aa3b2}
+.analysis-text strong{color:var(--text);font-weight:600}
+
+.tags{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.75rem}
+.tag{
+  font-family:var(--mono);font-size:.63rem;
+  padding:.2rem .55rem;
+  border:1px solid var(--border2);
+  border-radius:5px;color:var(--muted);letter-spacing:.04em;
+}
+
+/* ── RESULTS HIDDEN ── */
+#results{display:none}
+
+/* ── DISCLAIMER ── */
+.disclaimer{
+  font-family:var(--mono);font-size:.65rem;color:var(--muted);
+  text-align:center;padding:2rem 3rem;
+  border-top:1px solid var(--border);
+  letter-spacing:.04em;line-height:1.8;
+  margin-top:2rem;
+}
+
+/* ── RESPONSIVE ── */
+@media(max-width:700px){
+  header{padding:1.2rem 1.5rem}
+  .main{padding:1.5rem}
+  .hero-title{font-size:1.5rem}
+  .params-grid{grid-template-columns:1fr}
+  .metrics-5{grid-template-columns:repeat(2,1fr)}
+  .card-top{gap:.6rem}
+  .header-pills{display:none}
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <div class="logo-wrap">
+    <div class="logo">Finviz <span>Swing</span> Analyzer</div>
+    <div class="logo-sub">AI-powered · Claude Sonnet · Swing Setup</div>
+  </div>
+  <div class="header-pills">
+    <div class="pill live">Claude AI</div>
+    <div class="pill">Tier 1/2/3</div>
+    <div class="pill">Entry · SL · TP</div>
+  </div>
+  <div class="status-dot" title="Pronto"></div>
+</header>
+
+<div class="main">
+
+  <div class="hero">
+    <div class="hero-title">Analisi <span>swing trading</span><br>da screenshot Finviz</div>
+    <div class="hero-sub">Carica lo screenshot del tuo screener — Claude legge i prezzi, classifica ogni titolo in Tier 1/2/3 e calcola entry, stop loss, target e R:R in secondi.</div>
+  </div>
+
+  <div class="upload-zone" id="dropZone">
+    <input type="file" id="fileInput" accept="image/*">
+    <div class="upload-icon">📊</div>
+    <div class="upload-title">Carica screenshot Finviz</div>
+    <div class="upload-sub">Drag & drop oppure clicca · PNG · JPG · WEBP</div>
+    <img id="previewImg" class="upload-preview" alt="Preview">
+  </div>
+
+  <div class="params-grid">
+    <div class="param-card">
+      <div class="param-label">Filtri screener</div>
+      <div class="param-val">Mid Cap+ · Vol>1M · RelVol>1.5</div>
+    </div>
+    <div class="param-card">
+      <div class="param-label">Esclusione automatica</div>
+      <div class="param-val">1W>15% · VolW>10% · Downtrend</div>
+    </div>
+    <div class="param-card">
+      <div class="param-label">Output per titolo</div>
+      <div class="param-val">Tier · Entry · SL · TP · R:R · Win%</div>
+    </div>
+  </div>
+
+  <div class="error-box" id="errorBox"></div>
+
+  <div id="rateLimitBox" style="display:none;background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.3);border-radius:12px;padding:1rem 1.2rem;margin-bottom:1rem">
+    <div style="font-family:var(--mono);font-size:.75rem;color:var(--amber);font-weight:500;margin-bottom:.5rem">⏳ Limite API temporaneo raggiunto</div>
+    <div style="font-size:.82rem;color:#c0b090;line-height:1.6">Hai esaurito il limite di utilizzo dell'API Claude per questa finestra di 5 ore. Si resetterà tra:</div>
+    <div id="countdown" style="font-family:var(--mono);font-size:1.3rem;color:var(--amber);font-weight:500;margin-top:.5rem">--:--:--</div>
+    <div style="font-size:.78rem;color:var(--muted);margin-top:.4rem">Puoi riprovare non appena il timer raggiunge 00:00:00.</div>
+  </div>
+
+  <button class="analyze-btn" id="analyzeBtn" disabled>
+    <div class="spinner" id="spinner"></div>
+    <span id="btnText">⚡ Carica uno screenshot per iniziare</span>
+  </button>
+
+  <div class="progress-bar" id="progressBar">
+    <div class="progress-fill" id="progressFill"></div>
+  </div>
+
+  <div class="thinking" id="thinking">
+    <div class="thinking-title">🧠 Claude sta analizzando<span class="dots"></span></div>
+    <div style="margin-top:.4rem">Lettura prezzi · Supporti & resistenze · Classificazione tier · Calcolo R:R</div>
+  </div>
+
+  <div id="results"></div>
+
+</div><!-- /main -->
+
+<div class="disclaimer">
+  ⚠ &nbsp;Solo a scopo informativo — non costituisce consulenza finanziaria &nbsp;·&nbsp;
+  I prezzi sono letti dallo screenshot e possono non coincidere con il mercato in tempo reale &nbsp;·&nbsp;
+  Fai sempre la tua analisi prima di operare &nbsp;·&nbsp; DYOR
+</div>
+
+</div><!-- /page -->
+
+<script>
+const fileInput   = document.getElementById('fileInput');
+const dropZone    = document.getElementById('dropZone');
+const previewImg  = document.getElementById('previewImg');
+const analyzeBtn  = document.getElementById('analyzeBtn');
+const btnText     = document.getElementById('btnText');
+const spinner     = document.getElementById('spinner');
+const resultsDiv  = document.getElementById('results');
+const thinking    = document.getElementById('thinking');
+const errorBox    = document.getElementById('errorBox');
+const progressBar = document.getElementById('progressBar');
+const progressFill= document.getElementById('progressFill');
+
+let imageBase64 = null;
+let imageType   = null;
+
+/* ── helpers ── */
+function showError(msg){
+  errorBox.textContent = '⚠ ' + msg;
+  errorBox.style.display = 'block';
+  setTimeout(()=>errorBox.style.display='none', 8000);
+}
+function setProgress(pct){
+  progressFill.style.width = pct + '%';
+}
+function fmtPerf(v){
+  if(v == null || v === '') return '-';
+  const n = parseFloat(v);
+  if(isNaN(n)) return v;
+  return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+function perfColor(v){
+  const n = parseFloat(v);
+  return isNaN(n) ? '' : (n >= 0 ? 'g' : 'r');
+}
+function fmtPrice(v){
+  if(v == null || v === '') return '-';
+  const n = parseFloat(v);
+  return isNaN(n) ? v : '$' + n.toFixed(2);
+}
+
+/* ── file handling ── */
+function handleFile(file){
+  if(!file) return;
+  if(!file.type.startsWith('image/')){
+    showError('Formato non supportato — carica PNG, JPG o WEBP.');
+    return;
+  }
+  imageType = file.type;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const dataUrl = e.target.result;
+    imageBase64 = dataUrl.split(',')[1];
+    previewImg.src = dataUrl;
+    previewImg.style.display = 'block';
+    analyzeBtn.disabled = false;
+    btnText.textContent = '⚡ Analizza tutti i titoli con Claude AI';
+    errorBox.style.display = 'none';
+  };
+  reader.readAsDataURL(file);
+}
+
+fileInput.addEventListener('change', e => handleFile(e.target.files[0]));
+dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag'); });
+dropZone.addEventListener('dragleave', ()  => dropZone.classList.remove('drag'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag');
+  handleFile(e.dataTransfer.files[0]);
+});
+
+/* ── ANALYZE ── */
+analyzeBtn.addEventListener('click', async () => {
+  if(!imageBase64) return;
+
+  analyzeBtn.disabled = true;
+  spinner.style.display = 'block';
+  btnText.textContent = 'Analisi in corso...';
+  thinking.style.display = 'block';
+  resultsDiv.style.display = 'none';
+  errorBox.style.display = 'none';
+  progressBar.style.display = 'block';
+  setProgress(8);
+
+  const SYSTEM = `Sei un analista swing trading. Rispondi SOLO con JSON valido. Niente testo extra, niente markdown, niente backtick.
+
+REGOLA PREZZI: leggi ogni prezzo SOLO dalla colonna "Price" dello screenshot.
+
+ESCLUSIONE AUTOMATICA → Tier 3: Perf Week>15%, Volatility W>10%, perf annuale negativa+downtrend, small cap irregolare.
+
+Restituisci questo JSON per tutti i titoli visibili (analisi MAX 2 frasi per titolo per non superare i token):
+{"timestamp":"ISO","total":N,"winner":{"ticker":"X","reason":"1 frase"},"action":"azione con prezzo","stocks":[{"ticker":"","name":"","sector":"","price":0.0,"perf_week":0.0,"perf_month":0.0,"perf_ytd":0.0,"vol_week":0.0,"rel_vol":0.0,"tier":1,"is_best":false,"entry":"","stop":"","target1":"","target2":"","rr":"","winrate":"","analysis":"MAX 2 FRASI","exclude_reason":"","tags":[""]}]}
+
+Includi tutti i titoli. Restituisci SOLO il JSON, inizia con { finisci con }.`;
+
+  // ── countdown helpers ──
+  let countdownInterval = null;
+  function startCountdown(resetsAt) {
+    const box = document.getElementById('rateLimitBox');
+    const cd  = document.getElementById('countdown');
+    if (!box || !cd) return;
+    box.style.display = 'block';
+    analyzeBtn.disabled = true;
+    btnText.textContent = '⏳ Limite API — attendi il reset';
+    if (countdownInterval) clearInterval(countdownInterval);
+    countdownInterval = setInterval(() => {
+      const diff = resetsAt - Math.floor(Date.now() / 1000);
+      if (diff <= 0) {
+        clearInterval(countdownInterval);
+        cd.textContent = '00:00:00';
+        box.style.display = 'none';
+        analyzeBtn.disabled = false;
+        btnText.textContent = '⚡ Riprova ora';
+        return;
+      }
+      const h = Math.floor(diff / 3600);
+      const m = Math.floor((diff % 3600) / 60);
+      const s = diff % 60;
+      cd.textContent = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    }, 1000);
+  }
+
+  function tryRecoverJSON(raw) {
+    // Remove markdown fences
+    let s = raw.replace(/```json|```/g, '').trim();
+    // Direct parse
+    try { return JSON.parse(s); } catch(_) {}
+    // Find outermost { ... }
+    const start = s.indexOf('{');
+    const end   = s.lastIndexOf('}');
+    if (start !== -1 && end !== -1 && end > start) {
+      try { return JSON.parse(s.slice(start, end + 1)); } catch(_) {}
+    }
+    // Progressive backtrack: find last valid closing
+    let candidate = s.slice(start);
+    while (candidate.length > 10) {
+      const last = candidate.lastIndexOf('}');
+      if (last === -1) break;
+      candidate = candidate.slice(0, last + 1);
+      // Ensure stocks array is closed
+      const closedCandidate = candidate.replace(/,?\s*\{[^{}]*$/, '') + ']}';
+      try { return JSON.parse(closedCandidate); } catch(_) {}
+      try { return JSON.parse(candidate + ']}'); } catch(_) {}
+      candidate = candidate.slice(0, last);
+    }
+    return null;
+  }
+
+  try {
+    setProgress(25);
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 6000,
+        system: SYSTEM,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: imageType, data: imageBase64 }
+            },
+            {
+              type: 'text',
+              text: 'Analizza TUTTI i titoli visibili. Leggi prezzi dalla colonna Price. Restituisci solo il JSON richiesto, analisi max 2 frasi per titolo.'
+            }
+          ]
+        }]
+      })
+    });
+
+    setProgress(70);
+    const data = await resp.json();
+
+    // ── Rate limit detection ──
+    if (resp.status === 429 || data?.type === 'exceeded_limit' ||
+        (data?.error && (data.error.type === 'exceeded_limit' || data.error.type === 'rate_limit_error'))) {
+      const resetsAt = data?.resetsAt || data?.error?.resetsAt || (Math.floor(Date.now()/1000) + 3600);
+      startCountdown(resetsAt);
+      thinking.style.display = 'none';
+      spinner.style.display = 'none';
+      progressBar.style.display = 'none';
+      return;
+    }
+
+    if (!resp.ok) throw new Error(data?.error?.message || `Errore API HTTP ${resp.status}`);
+
+    const rawText = data.content.find(b => b.type === 'text')?.text || '';
+    const json = tryRecoverJSON(rawText);
+    if (!json) throw new Error('JSON non valido ricevuto da Claude. Riprova — potrebbe essere un problema temporaneo.');
+
+    setProgress(100);
+    setTimeout(() => { progressBar.style.display = 'none'; setProgress(0); }, 700);
+    renderResults(json);
+
+  } catch(err) {
+    progressBar.style.display = 'none';
+    setProgress(0);
+    thinking.style.display = 'none';
+    showError('⚠ ' + err.message);
+    console.error(err);
+    analyzeBtn.disabled = false;
+    spinner.style.display = 'none';
+    btnText.textContent = '⚡ Riprova';
+    return;
+  }
+
+  thinking.style.display = 'none';
+  spinner.style.display = 'none';
+  analyzeBtn.disabled = false;
+  btnText.textContent = '⚡ Analizza un nuovo screenshot';
+});
+
+/* ── RENDER ── */
+function renderResults(data){
+  const stocks = data.stocks || [];
+  const tier1 = stocks.filter(s => s.tier === 1);
+  const tier2 = stocks.filter(s => s.tier === 2);
+  const tier3 = stocks.filter(s => s.tier === 3);
+  const winnerTicker = data.winner?.ticker || '';
+
+  let html = '';
+
+  /* winner banner */
+  if(data.winner && winnerTicker){
+    const w = stocks.find(s => s.ticker === winnerTicker) || {};
+    html += `
+    <div class="winner-box">
+      <div class="action-label">★ &nbsp;Best setup oggi</div>
+      <div class="winner-row">
+        <div class="winner-ticker">${winnerTicker}</div>
+        <div class="winner-info">
+          <div class="title">${w.name || winnerTicker} — ${w.sector || ''}</div>
+          <div class="sub">Win rate stimato ${w.winrate||'–'} &nbsp;·&nbsp; R:R ${w.rr||'–'} &nbsp;·&nbsp; Prezzo $${w.price!=null?parseFloat(w.price).toFixed(2):'–'}</div>
+        </div>
+      </div>
+      <div class="winner-reason">${data.winner.reason || ''}</div>
+      ${data.action ? `<div class="action-line"><strong>⚡ Azione concreta:</strong> ${escHL(data.action)}</div>` : ''}
+    </div>`;
+  }
+
+  /* tier sections */
+  html += renderTierSection(tier1, 1, '▲ Tier 1 — Entra', 'tier1', winnerTicker);
+  html += renderTierSection(tier2, 2, '◆ Tier 2 — Watchlist', 'tier2', winnerTicker);
+  html += renderTierSection(tier3, 3, '✕ Tier 3 — Evita', 'tier3', winnerTicker);
+
+  resultsDiv.innerHTML = html;
+  resultsDiv.style.display = 'block';
+  resultsDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function escHL(text){
+  /* highlight price values like $213.41 in accent color */
+  return text.replace(/(\$[\d,]+\.?\d*)/g, '<span class="hl" style="color:var(--accent);font-family:var(--mono);font-weight:500">$1</span>');
+}
+
+function renderTierSection(stocks, tier, label, cls, winnerTicker){
+  if(!stocks.length) return '';
+  let html = `<div class="tier-section">
+    <div class="tier-header">
+      <div class="tier-label ${cls}-label">${label}</div>
+      <div class="tier-count">${stocks.length} titol${stocks.length===1?'o':'i'}</div>
+    </div>`;
+
+  stocks.forEach(st => {
+    const isBest = st.ticker === winnerTicker;
+    html += `<div class="stock-card ${cls}${isBest?' best':''}">
+      <div class="card-top">
+        <div class="ticker-chip">${st.ticker}</div>
+        <div class="stock-name">${st.name||''}${st.sector?`<span class="stock-sector">${st.sector}</span>`:''}</div>
+        <div class="price-tag">${fmtPrice(st.price)}</div>
+        ${isBest ? '<div class="best-badge">BEST</div>' : ''}
+      </div>`;
+
+    if(tier < 3){
+      html += `<div class="metrics-row metrics-5">
+        <div class="metric-box"><div class="lbl">Perf 1W</div><div class="val ${perfColor(st.perf_week)}">${fmtPerf(st.perf_week)}</div></div>
+        <div class="metric-box"><div class="lbl">Ingresso</div><div class="val g sm">${st.entry||'–'}</div></div>
+        <div class="metric-box"><div class="lbl">Stop Loss</div><div class="val r sm">$${st.stop||'–'}</div></div>
+        <div class="metric-box"><div class="lbl">TP1 / TP2</div><div class="val b sm">$${st.target1||'–'} / $${st.target2||'–'}</div></div>
+        <div class="metric-box"><div class="lbl">R:R · Win%</div><div class="val a sm">${st.rr||'–'} · ${st.winrate||'–'}</div></div>
+      </div>`;
+    } else {
+      html += `<div class="metrics-row metrics-3">
+        <div class="metric-box"><div class="lbl">Perf 1W</div><div class="val ${perfColor(st.perf_week)}">${fmtPerf(st.perf_week)}</div></div>
+        <div class="metric-box"><div class="lbl">Vol. sett.</div><div class="val a">${st.vol_week!=null?parseFloat(st.vol_week).toFixed(2)+'%':'–'}</div></div>
+        <div class="metric-box"><div class="lbl">Motivo esclusione</div><div class="val r sm">${st.exclude_reason||'–'}</div></div>
+      </div>`;
+    }
+
+    html += `<div class="analysis-text">${st.analysis||''}</div>`;
+
+    if(st.tags && st.tags.length){
+      html += `<div class="tags">${st.tags.map(t=>`<span class="tag">${t}</span>`).join('')}</div>`;
+    }
+
+    html += '</div>'; /* /stock-card */
+  });
+
+  html += '</div>'; /* /tier-section */
+  return html;
+}
+</script>
+</body>
+</html>
